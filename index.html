@@ -101,13 +101,44 @@
                 <span class="upload-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.2A1.8 1.8 0 0 0 6.8 20h10.4a1.8 1.8 0 0 0 1.8-1.8V14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 </span>
-                <span class="upload-title">Choose a CSV file</span>
-                <span class="upload-subtitle">or drag it here <span class="muted-separator">·</span> CSV format</span>
-                <input id="task-file" name="task-file" type="file" accept=".csv,text/csv" />
+                <span class="upload-title">Choose or drop a CSV file</span>
+                <span class="upload-subtitle">CSV only <span class="muted-separator">·</span> import starts immediately</span>
+                <input id="task-file" name="task-file" type="file" accept=".csv,text/csv" aria-describedby="upload-help" />
               </label>
-              <div class="csv-footnote"><span class="info-icon" aria-hidden="true">i</span><span>CSV import is not active in this initial prototype.</span></div>
+              <div id="upload-help" class="csv-footnote"><span class="info-icon" aria-hidden="true">i</span><span>Required: task_id, title, status. Optional: owner, due_date, blocked_by (separate blocker IDs with semicolons).</span></div>
             </article>
           </div>
+
+          <section class="task-import-results" aria-labelledby="import-results-title">
+            <div class="import-results-heading">
+              <div>
+                <p class="section-kicker">TASK DATA</p>
+                <h3 id="import-results-title">CSV import</h3>
+              </div>
+            </div>
+            <p id="import-summary" class="import-summary" role="status" aria-live="polite" aria-atomic="true">No task file imported yet. Choose a CSV with task_id, title and status to preview tasks here.</p>
+            <div id="import-errors" class="import-errors" role="alert" hidden>
+              <p class="import-errors-title">The file was not imported. Fix these issues and try again:</p>
+              <ul id="import-error-list"></ul>
+            </div>
+            <div id="task-preview" class="task-preview" hidden>
+              <div class="task-table-scroll">
+                <table class="task-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Task ID</th>
+                      <th scope="col">Title</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Owner</th>
+                      <th scope="col">Due date</th>
+                      <th scope="col">Blocked by</th>
+                    </tr>
+                  </thead>
+                  <tbody id="task-preview-rows"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
         </section>
 
         <section class="review-section" aria-labelledby="review-title">
