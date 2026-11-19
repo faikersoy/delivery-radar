@@ -1,5 +1,6 @@
 import { isCsvFile, parseTasksCsv } from "./ingestion/csv.mjs";
 import { analyzeMeetingNotes } from "./analysis/notes.mjs";
+import { linkSignalsToTasks } from "./analysis/task-linking.mjs";
 
 const status = document.querySelector("#app-status");
 const fileInput = document.querySelector("#task-file");
@@ -85,6 +86,7 @@ uploadZone?.addEventListener("drop", (event) => {
 async function importCsvFile(file) {
   importedTasks = [];
   renderTasks();
+  renderNoteSignals();
   importErrors.hidden = true;
   importErrorList.replaceChildren();
   importSummary.textContent = `Reading ${file.name}…`;
@@ -108,6 +110,7 @@ async function importCsvFile(file) {
     importedTasks = result.tasks;
     importSummary.textContent = `${importedTasks.length} ${importedTasks.length === 1 ? "task" : "tasks"} imported from ${file.name}.`;
     renderTasks();
+    renderNoteSignals();
   } catch {
     showImportErrors([{ row: 1, field: "file", message: "The selected file could not be read." }]);
     importSummary.textContent = `Import failed for ${file.name}. 0 tasks imported.`;
@@ -150,8 +153,9 @@ function renderTasks() {
   }
 }
 
-function renderNoteSignals(result) {
+function renderNoteSignals(result = analyzeMeetingNotes(notesInput?.value ?? "")) {
   notesSignalList.replaceChildren();
+  const linkedSignals = linkSignalsToTasks(importedTasks, result.signals);
   notesSignalCount.textContent = `${result.signals.length} ${result.signals.length === 1 ? "signal" : "signals"}`;
 
   if (result.segments.length === 0) {
@@ -162,7 +166,7 @@ function renderNoteSignals(result) {
     notesAnalysisSummary.textContent = `Found ${result.signals.length} rule-based ${result.signals.length === 1 ? "signal" : "signals"} across ${result.segments.length} ${result.segments.length === 1 ? "segment" : "segments"}. These are signals for review, not delivery-risk assessments.`;
   }
 
-  for (const signal of result.signals) {
+  for (const { signal, tasks } of linkedSignals) {
     const item = document.createElement("li");
     item.className = "notes-signal-item";
 
@@ -187,7 +191,27 @@ function renderNoteSignals(result) {
     reference.className = "notes-signal-reference";
     reference.textContent = `Characters ${signal.start_offset}–${signal.end_offset}`;
 
-    item.append(heading, evidence, reference);
+    const taskLinks = document.createElement("div");
+    taskLinks.className = `notes-signal-task-links ${tasks.length > 0 ? "is-linked" : "is-unlinked"}`;
+
+    if (tasks.length > 0) {
+      const label = document.createElement("span");
+      label.textContent = tasks.length === 1 ? "Linked task" : "Linked tasks";
+      taskLinks.append(label);
+
+      for (const task of tasks) {
+        const taskReference = document.createElement("span");
+        taskReference.className = "notes-signal-task-reference";
+        taskReference.textContent = `${task.task_id} · ${task.title}`;
+        taskLinks.append(taskReference);
+      }
+    } else {
+      taskLinks.textContent = importedTasks.length === 0
+        ? "Unlinked · import tasks to match explicit task IDs"
+        : "Unlinked · no imported task ID found in evidence";
+    }
+
+    item.append(heading, evidence, reference, taskLinks);
     notesSignalList.append(item);
   }
 }
