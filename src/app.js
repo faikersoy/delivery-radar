@@ -2,6 +2,12 @@ import { isCsvFile, parseTasksCsv } from "./ingestion/csv.mjs";
 import { analyzeMeetingNotes } from "./analysis/notes.mjs";
 import { linkSignalsToTasks } from "./analysis/task-linking.mjs";
 import { generateFindings } from "./analysis/findings.mjs";
+import {
+  getEvidenceItemKey,
+  NOT_OBSERVED_MESSAGE,
+  reconcileDecisions,
+  saveDecision,
+} from "./review/decisions.mjs";
 
 const status = document.querySelector("#app-status");
 const fileInput = document.querySelector("#task-file");
@@ -18,8 +24,12 @@ const notesSignalList = document.querySelector("#notes-signal-list");
 const findingCount = document.querySelector("#finding-count");
 const emptyReview = document.querySelector("#empty-review");
 const findingList = document.querySelector("#finding-list");
+const notObservedSection = document.querySelector("#not-observed-section");
+const notObservedList = document.querySelector("#not-observed-list");
 
 let importedTasks = [];
+const projectId = globalThis.crypto?.randomUUID?.() ?? `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const decisions = new Map();
 
 if (status) {
   status.textContent = "Meeting-note signal extraction and evidence-backed findings are ready. Risk scoring is not active.";
@@ -224,6 +234,7 @@ function renderNoteSignals(result = analyzeMeetingNotes(notesInput?.value ?? "")
 function renderFindings(findings) {
   findingList.replaceChildren();
   findingCount.replaceChildren();
+  const review = reconcileDecisions(projectId, findings, decisions);
 
   const countDot = document.createElement("span");
   countDot.className = "count-dot";
@@ -233,9 +244,11 @@ function renderFindings(findings) {
       ? " No qualifying findings"
       : ` ${findings.length} ${findings.length === 1 ? "finding" : "findings"}`,
   ));
-  emptyReview.hidden = findings.length > 0;
+  emptyReview.hidden = review.current.length > 0;
 
-  for (const finding of findings) {
+  for (const current of review.current) {
+    const { finding } = current;
+    const addedEvidenceKeys = new Set(current.evidence_changes.added.map(getEvidenceItemKey));
     const card = document.createElement("article");
     card.className = "finding-card";
 
@@ -256,6 +269,15 @@ function renderFindings(findings) {
     relationship.textContent = finding.relationship;
     card.append(relationship);
 
+    const systemAction = document.createElement("section");
+    systemAction.className = "finding-detail system-suggested-action";
+    const systemActionTitle = document.createElement("h4");
+    systemActionTitle.textContent = "System-suggested action";
+    const systemActionText = document.createElement("p");
+    systemActionText.textContent = finding.suggested_action;
+    systemAction.append(systemActionTitle, systemActionText);
+    card.append(systemAction);
+
     const evidenceSection = document.createElement("section");
     evidenceSection.className = "finding-detail";
     const evidenceTitle = document.createElement("h4");
@@ -267,6 +289,12 @@ function renderFindings(findings) {
       const row = document.createElement("li");
       if (evidence.kind === "task_status") {
         row.textContent = `CSV task status: ${evidence.value}`;
+        markAddedEvidence(row, addedEvidenceKeys.has(getEvidenceItemKey({
+          kind: "task_status",
+          source_ref: { source_id: "task_data" },
+          task_id: finding.task.task_id,
+          value: evidence.value,
+        })));
       } else {
         const signalLabel = document.createElement("span");
         signalLabel.className = "finding-evidence-label";
@@ -278,6 +306,13 @@ function renderFindings(findings) {
         offset.className = "finding-offset";
         offset.textContent = `Characters ${evidence.start_offset}–${evidence.end_offset}`;
         row.append(signalLabel, quote, offset);
+        markAddedEvidence(row, addedEvidenceKeys.has(getEvidenceItemKey({
+          kind: "meeting_signal",
+          source_ref: evidence.source_ref ?? { source_id: "meeting_notes" },
+          signal_type: evidence.signal_type,
+          state: evidence.state,
+          evidence: evidence.evidence,
+        })));
       }
       evidenceList.append(row);
     }
@@ -294,6 +329,13 @@ function renderFindings(findings) {
       for (const dependency of finding.dependencies) {
         const row = document.createElement("li");
         row.textContent = `${dependency.task_id} · ${dependency.title} lists ${dependency.blocked_by_task_id} in blocked_by.`;
+        markAddedEvidence(row, addedEvidenceKeys.has(getEvidenceItemKey({
+          kind: "dependency",
+          source_ref: { source_id: "task_data" },
+          task_id: dependency.task_id,
+          title: dependency.title,
+          blocked_by_task_id: dependency.blocked_by_task_id,
+        })));
         dependenciesList.append(row);
       }
       dependenciesSection.append(dependenciesList);
@@ -314,7 +356,278 @@ function renderFindings(findings) {
       ?? "No downstream implication is identified from the imported dependency data.";
     implicationsSection.append(implicationsTitle, implicationText);
     card.append(implicationsSection);
+    appendDecisionPanel(card, current);
 
     findingList.append(card);
   }
+
+  renderNotObserved(review.not_observed);
+}
+
+function appendDecisionPanel(card, review) {
+  const panel = document.createElement("section");
+  panel.className = "pm-decision-panel";
+  const heading = document.createElement("h4");
+  heading.textContent = "PM decision";
+  panel.append(heading);
+
+  const state = document.createElement("p");
+  state.className = `pm-decision-state ${review.review_state === "review_needed" ? "needs-review" : ""}`;
+  state.textContent = review.review_state === "pending_review"
+    ? "Pending review"
+    : review.review_state === "review_needed"
+      ? `Review needed — previously ${capitalize(review.decision.status)}`
+      : capitalize(review.decision.status);
+  panel.append(state);
+
+  if (review.decision) appendDecisionDetails(panel, review.decision);
+  if (review.review_state === "review_needed") appendEvidenceChanges(panel, review.evidence_changes);
+
+  const actions = document.createElement("div");
+  actions.className = "pm-decision-actions";
+  const confirm = document.createElement("button");
+  confirm.type = "button";
+  confirm.className = "decision-button";
+  confirm.textContent = "Confirm";
+  confirm.setAttribute("aria-label", `Confirm finding ${review.finding.task.task_id}`);
+  confirm.addEventListener("click", () => {
+    saveDecision(decisions, { project_id: projectId, finding: review.finding, status: "confirmed" });
+    renderNoteSignals();
+  });
+  actions.append(confirm);
+  actions.append(createDismissForm(review.finding), createOverrideForm(review.finding));
+  panel.append(actions);
+  card.append(panel);
+}
+
+function appendDecisionDetails(container, decision) {
+  if (decision.reason) appendLabeledText(container, "Reason", decision.reason);
+  if (decision.explanatory_note) appendLabeledText(container, "PM note", decision.explanatory_note);
+  if (decision.revised_assessment) appendLabeledText(container, "PM revised assessment", decision.revised_assessment);
+  if (decision.suggested_action) appendLabeledText(container, "PM suggested action", decision.suggested_action);
+
+  const timestamp = document.createElement("p");
+  timestamp.className = "decision-timestamp";
+  timestamp.textContent = `Recorded ${new Date(decision.decided_at).toLocaleString()}`;
+  container.append(timestamp);
+}
+
+function appendEvidenceChanges(container, changes) {
+  const section = document.createElement("div");
+  section.className = "evidence-changes";
+  const title = document.createElement("h5");
+  title.textContent = "Evidence changed since review";
+  section.append(title);
+
+  for (const [label, items, className] of [
+    ["Added evidence", changes.added, "evidence-added"],
+    ["Removed evidence", changes.removed, "evidence-removed"],
+  ]) {
+    const group = document.createElement("div");
+    const groupTitle = document.createElement("strong");
+    groupTitle.textContent = label;
+    group.append(groupTitle);
+    if (items.length === 0) {
+      const none = document.createElement("p");
+      none.textContent = "None";
+      group.append(none);
+    } else {
+      const list = document.createElement("ul");
+      for (const item of items) {
+        const row = document.createElement("li");
+        row.className = className;
+        row.textContent = formatEvidenceItem(item);
+        list.append(row);
+      }
+      group.append(list);
+    }
+    section.append(group);
+  }
+  container.append(section);
+}
+
+function renderNotObserved(entries) {
+  notObservedList.replaceChildren();
+  notObservedSection.hidden = entries.length === 0;
+
+  for (const entry of entries) {
+    const card = document.createElement("article");
+    card.className = "not-observed-card";
+    const title = document.createElement("h4");
+    title.textContent = `${entry.finding.task.task_id} · ${entry.finding.task.title}`;
+    card.append(title);
+
+    const message = document.createElement("p");
+    message.className = "not-observed-message";
+    message.textContent = NOT_OBSERVED_MESSAGE;
+    card.append(message);
+
+    const previousFinding = document.createElement("p");
+    previousFinding.textContent = entry.finding.relationship;
+    card.append(previousFinding);
+    appendLabeledText(card, "Previous system-suggested action", entry.finding.suggested_action);
+    appendDecisionDetails(card, entry.decision);
+
+    const evidenceTitle = document.createElement("strong");
+    evidenceTitle.textContent = "Previously reviewed evidence";
+    card.append(evidenceTitle);
+    const evidenceList = document.createElement("ul");
+    for (const item of entry.finding.confirmed_evidence) {
+      const row = document.createElement("li");
+      if (item.kind === "task_status") {
+        row.textContent = `CSV task status: ${item.value}`;
+      } else {
+        const label = document.createElement("span");
+        label.textContent = `${item.signal_type.replaceAll("_", " ")} · ${item.state}`;
+        const quote = document.createElement("blockquote");
+        quote.textContent = item.evidence;
+        row.append(label, quote);
+      }
+      evidenceList.append(row);
+    }
+    card.append(evidenceList);
+
+    if (entry.finding.dependencies.length > 0) {
+      const dependencyTitle = document.createElement("strong");
+      dependencyTitle.textContent = "Previously observed dependencies";
+      const dependencyList = document.createElement("ul");
+      for (const dependency of entry.finding.dependencies) {
+        const row = document.createElement("li");
+        row.textContent = `${dependency.task_id} · ${dependency.title} lists ${dependency.blocked_by_task_id} in blocked_by.`;
+        dependencyList.append(row);
+      }
+      card.append(dependencyTitle, dependencyList);
+    }
+
+    if (entry.finding.possible_implications.length > 0) {
+      appendLabeledText(card, "Previous possible implication", entry.finding.possible_implications.join(" "));
+    }
+    notObservedList.append(card);
+  }
+}
+
+function createDismissForm(finding) {
+  const details = document.createElement("details");
+  details.className = "decision-editor";
+  const summary = document.createElement("summary");
+  summary.textContent = "Dismiss";
+  details.append(summary);
+
+  const form = document.createElement("form");
+  const category = document.createElement("select");
+  category.name = "dismiss_reason_category";
+  category.required = true;
+  category.setAttribute("aria-label", "Dismissal reason");
+  category.append(new Option("Choose a reason", ""), new Option("False positive", "false_positive"), new Option("Handled externally", "handled_externally"));
+  form.append(category);
+  form.append(createTextAreaField("Optional note", "explanatory_note", false));
+  const error = createFormError();
+  form.append(error, createSubmitButton("Save dismissal"));
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const selected = category.selectedOptions[0];
+    submitDecision(form, error, {
+      project_id: projectId,
+      finding,
+      status: "dismissed",
+      dismiss_reason_category: category.value,
+      reason: selected?.textContent ?? "",
+      explanatory_note: form.elements.namedItem("explanatory_note").value,
+    });
+  });
+  details.append(form);
+  return details;
+}
+
+function createOverrideForm(finding) {
+  const details = document.createElement("details");
+  details.className = "decision-editor";
+  const summary = document.createElement("summary");
+  summary.textContent = "Override";
+  details.append(summary);
+
+  const form = document.createElement("form");
+  form.append(createTextAreaField("Reason (required)", "reason", true));
+  form.append(createTextAreaField("Revised assessment", "revised_assessment", false));
+  form.append(createTextAreaField("Suggested action", "suggested_action", false));
+  const error = createFormError();
+  form.append(error, createSubmitButton("Save override"));
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitDecision(form, error, {
+      project_id: projectId,
+      finding,
+      status: "overridden",
+      reason: form.elements.namedItem("reason").value,
+      revised_assessment: form.elements.namedItem("revised_assessment").value,
+      suggested_action: form.elements.namedItem("suggested_action").value,
+    });
+  });
+  details.append(form);
+  return details;
+}
+
+function submitDecision(form, error, input) {
+  error.textContent = "";
+  try {
+    saveDecision(decisions, input);
+    renderNoteSignals();
+  } catch (cause) {
+    error.textContent = cause.message;
+  }
+}
+
+function createTextAreaField(labelText, name, required) {
+  const label = document.createElement("label");
+  label.className = "decision-field";
+  label.append(document.createTextNode(labelText));
+  const textarea = document.createElement("textarea");
+  textarea.name = name;
+  textarea.rows = 2;
+  textarea.required = required;
+  label.append(textarea);
+  return label;
+}
+
+function createFormError() {
+  const error = document.createElement("p");
+  error.className = "decision-form-error";
+  error.setAttribute("role", "alert");
+  return error;
+}
+
+function createSubmitButton(text) {
+  const button = document.createElement("button");
+  button.type = "submit";
+  button.className = "decision-button secondary";
+  button.textContent = text;
+  return button;
+}
+
+function appendLabeledText(container, labelText, value) {
+  if (!value) return;
+  const item = document.createElement("p");
+  const label = document.createElement("strong");
+  label.textContent = `${labelText}: `;
+  item.append(label, document.createTextNode(value));
+  container.append(item);
+}
+
+function markAddedEvidence(element, added) {
+  if (!added) return;
+  element.classList.add("evidence-added");
+  const badge = document.createElement("span");
+  badge.className = "evidence-added-badge";
+  badge.textContent = "Added since review";
+  element.append(badge);
+}
+
+function formatEvidenceItem(item) {
+  if (item.kind === "task_status") return `CSV status: ${item.value}`;
+  if (item.kind === "dependency") return `${item.task_id} lists ${item.blocked_by_task_id} in blocked_by.`;
+  return `${item.signal_type.replaceAll("_", " ")} · ${item.evidence}`;
+}
+
+function capitalize(value) {
+  return value ? `${value[0].toUpperCase()}${value.slice(1)}` : "Pending review";
 }

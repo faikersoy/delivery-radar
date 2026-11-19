@@ -18,6 +18,7 @@ export function generateFindings(tasks, linkedSignals) {
           finding_fingerprint: `blocked_task:${linkedTask.task_id}`,
           finding_type: "blocked_task",
           task: linkedTask,
+          suggested_action: "Review the blocked task and its linked active signal.",
           confirmed_evidence: [
             { kind: "task_status", value: linkedTask.status },
           ],
@@ -48,6 +49,7 @@ export function generateFindings(tasks, linkedSignals) {
       finding.confirmed_evidence.push({
         kind: "meeting_signal",
         signal_id: signal.signal_id,
+        source_ref: signal.source_ref ?? { source_id: "meeting_notes" },
         signal_type: signal.signal_type,
         state: signal.state,
         evidence: signal.evidence,

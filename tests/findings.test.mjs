@@ -38,6 +38,7 @@ test("creates exactly one T-102 finding from its active pending approval signal"
   assert.deepEqual(findings[0].confirmed_evidence[1], {
     kind: "meeting_signal",
     signal_id: pendingSignal.signal_id,
+    source_ref: { source_id: "meeting_notes" },
     signal_type: "pending_decision",
     state: "active",
     evidence,
