@@ -83,6 +83,14 @@
               </div>
               <label class="visually-hidden" for="meeting-notes">Meeting notes</label>
               <textarea id="meeting-notes" name="meeting-notes" rows="7" placeholder="Paste meeting notes here…&#10;&#10;Decisions pending, blockers, ownership changes — bring the context that might affect delivery."></textarea>
+              <section class="notes-analysis" aria-labelledby="notes-analysis-title">
+                <div class="notes-analysis-heading">
+                  <h4 id="notes-analysis-title">Detected signals</h4>
+                  <span id="notes-signal-count" class="notes-signal-count">0 signals</span>
+                </div>
+                <p id="notes-analysis-summary" class="notes-analysis-summary" role="status" aria-live="polite" aria-atomic="true">Paste meeting notes to check for explicit signal phrases.</p>
+                <ul id="notes-signal-list" class="notes-signal-list"></ul>
+              </section>
               <div class="card-footer"><span class="footer-mark"></span><span>Notes stay in this browser session in this prototype.</span></div>
             </article>
 

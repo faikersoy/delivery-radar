@@ -1,4 +1,5 @@
 import { isCsvFile, parseTasksCsv } from "./ingestion/csv.mjs";
+import { analyzeMeetingNotes } from "./analysis/notes.mjs";
 
 const status = document.querySelector("#app-status");
 const fileInput = document.querySelector("#task-file");
@@ -8,11 +9,23 @@ const importErrorList = document.querySelector("#import-error-list");
 const taskPreview = document.querySelector("#task-preview");
 const taskPreviewRows = document.querySelector("#task-preview-rows");
 const uploadZone = document.querySelector(".upload-zone");
+const notesInput = document.querySelector("#meeting-notes");
+const notesAnalysisSummary = document.querySelector("#notes-analysis-summary");
+const notesSignalCount = document.querySelector("#notes-signal-count");
+const notesSignalList = document.querySelector("#notes-signal-list");
 
 let importedTasks = [];
 
 if (status) {
-  status.textContent = "Delivery Radar prototype shell ready. Analysis is not active yet.";
+  status.textContent = "Meeting-note signal extraction is ready. Task linking and risk scoring are not active.";
+}
+
+notesInput?.addEventListener("input", () => {
+  renderNoteSignals(analyzeMeetingNotes(notesInput.value));
+});
+
+if (notesInput) {
+  renderNoteSignals(analyzeMeetingNotes(notesInput.value));
 }
 
 fileInput?.addEventListener("change", () => {
@@ -134,5 +147,47 @@ function renderTasks() {
     }
 
     taskPreviewRows.append(row);
+  }
+}
+
+function renderNoteSignals(result) {
+  notesSignalList.replaceChildren();
+  notesSignalCount.textContent = `${result.signals.length} ${result.signals.length === 1 ? "signal" : "signals"}`;
+
+  if (result.segments.length === 0) {
+    notesAnalysisSummary.textContent = "Paste meeting notes to check for explicit signal phrases.";
+  } else if (result.signals.length === 0) {
+    notesAnalysisSummary.textContent = `Checked ${result.segments.length} ${result.segments.length === 1 ? "segment" : "segments"}; no supported signal phrases detected.`;
+  } else {
+    notesAnalysisSummary.textContent = `Found ${result.signals.length} rule-based ${result.signals.length === 1 ? "signal" : "signals"} across ${result.segments.length} ${result.segments.length === 1 ? "segment" : "segments"}. These are signals for review, not delivery-risk assessments.`;
+  }
+
+  for (const signal of result.signals) {
+    const item = document.createElement("li");
+    item.className = "notes-signal-item";
+
+    const heading = document.createElement("div");
+    heading.className = "notes-signal-heading";
+
+    const type = document.createElement("span");
+    type.className = "notes-signal-type";
+    type.textContent = signal.signal_type.replaceAll("_", " ");
+
+    const state = document.createElement("span");
+    state.className = `notes-signal-state state-${signal.state}`;
+    state.textContent = signal.state.replaceAll("_", " ");
+
+    heading.append(type, state);
+
+    const evidence = document.createElement("blockquote");
+    evidence.className = "notes-signal-evidence";
+    evidence.textContent = signal.evidence;
+
+    const reference = document.createElement("span");
+    reference.className = "notes-signal-reference";
+    reference.textContent = `Characters ${signal.start_offset}–${signal.end_offset}`;
+
+    item.append(heading, evidence, reference);
+    notesSignalList.append(item);
   }
 }
