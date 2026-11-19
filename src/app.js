@@ -1,6 +1,7 @@
 import { isCsvFile, parseTasksCsv } from "./ingestion/csv.mjs";
 import { analyzeMeetingNotes } from "./analysis/notes.mjs";
 import { linkSignalsToTasks } from "./analysis/task-linking.mjs";
+import { generateFindings } from "./analysis/findings.mjs";
 
 const status = document.querySelector("#app-status");
 const fileInput = document.querySelector("#task-file");
@@ -14,11 +15,14 @@ const notesInput = document.querySelector("#meeting-notes");
 const notesAnalysisSummary = document.querySelector("#notes-analysis-summary");
 const notesSignalCount = document.querySelector("#notes-signal-count");
 const notesSignalList = document.querySelector("#notes-signal-list");
+const findingCount = document.querySelector("#finding-count");
+const emptyReview = document.querySelector("#empty-review");
+const findingList = document.querySelector("#finding-list");
 
 let importedTasks = [];
 
 if (status) {
-  status.textContent = "Meeting-note signal extraction is ready. Task linking and risk scoring are not active.";
+  status.textContent = "Meeting-note signal extraction and evidence-backed findings are ready. Risk scoring is not active.";
 }
 
 notesInput?.addEventListener("input", () => {
@@ -156,6 +160,7 @@ function renderTasks() {
 function renderNoteSignals(result = analyzeMeetingNotes(notesInput?.value ?? "")) {
   notesSignalList.replaceChildren();
   const linkedSignals = linkSignalsToTasks(importedTasks, result.signals);
+  renderFindings(generateFindings(importedTasks, linkedSignals));
   notesSignalCount.textContent = `${result.signals.length} ${result.signals.length === 1 ? "signal" : "signals"}`;
 
   if (result.segments.length === 0) {
@@ -213,5 +218,103 @@ function renderNoteSignals(result = analyzeMeetingNotes(notesInput?.value ?? "")
 
     item.append(heading, evidence, reference, taskLinks);
     notesSignalList.append(item);
+  }
+}
+
+function renderFindings(findings) {
+  findingList.replaceChildren();
+  findingCount.replaceChildren();
+
+  const countDot = document.createElement("span");
+  countDot.className = "count-dot";
+  countDot.setAttribute("aria-hidden", "true");
+  findingCount.append(countDot, document.createTextNode(
+    findings.length === 0
+      ? " No qualifying findings"
+      : ` ${findings.length} ${findings.length === 1 ? "finding" : "findings"}`,
+  ));
+  emptyReview.hidden = findings.length > 0;
+
+  for (const finding of findings) {
+    const card = document.createElement("article");
+    card.className = "finding-card";
+
+    const heading = document.createElement("div");
+    heading.className = "finding-card-heading";
+
+    const title = document.createElement("h3");
+    title.textContent = `${finding.task.task_id} · ${finding.task.title}`;
+
+    const statusLabel = document.createElement("span");
+    statusLabel.className = "finding-status";
+    statusLabel.textContent = "Blocked task";
+    heading.append(title, statusLabel);
+    card.append(heading);
+
+    const relationship = document.createElement("p");
+    relationship.className = "finding-relationship";
+    relationship.textContent = finding.relationship;
+    card.append(relationship);
+
+    const evidenceSection = document.createElement("section");
+    evidenceSection.className = "finding-detail";
+    const evidenceTitle = document.createElement("h4");
+    evidenceTitle.textContent = "Confirmed evidence";
+    const evidenceList = document.createElement("ul");
+    evidenceList.className = "finding-evidence-list";
+
+    for (const evidence of finding.confirmed_evidence) {
+      const row = document.createElement("li");
+      if (evidence.kind === "task_status") {
+        row.textContent = `CSV task status: ${evidence.value}`;
+      } else {
+        const signalLabel = document.createElement("span");
+        signalLabel.className = "finding-evidence-label";
+        signalLabel.textContent = `${evidence.signal_type.replaceAll("_", " ")} · ${evidence.state}`;
+        const quote = document.createElement("blockquote");
+        quote.className = "finding-quote";
+        quote.textContent = evidence.evidence;
+        const offset = document.createElement("span");
+        offset.className = "finding-offset";
+        offset.textContent = `Characters ${evidence.start_offset}–${evidence.end_offset}`;
+        row.append(signalLabel, quote, offset);
+      }
+      evidenceList.append(row);
+    }
+    evidenceSection.append(evidenceTitle, evidenceList);
+    card.append(evidenceSection);
+
+    const dependenciesSection = document.createElement("section");
+    dependenciesSection.className = "finding-detail";
+    const dependenciesTitle = document.createElement("h4");
+    dependenciesTitle.textContent = "Dependent tasks · from CSV";
+    dependenciesSection.append(dependenciesTitle);
+    if (finding.dependencies.length > 0) {
+      const dependenciesList = document.createElement("ul");
+      for (const dependency of finding.dependencies) {
+        const row = document.createElement("li");
+        row.textContent = `${dependency.task_id} · ${dependency.title} lists ${dependency.blocked_by_task_id} in blocked_by.`;
+        dependenciesList.append(row);
+      }
+      dependenciesSection.append(dependenciesList);
+    } else {
+      const none = document.createElement("p");
+      none.className = "finding-muted";
+      none.textContent = "No imported tasks list this task as a prerequisite.";
+      dependenciesSection.append(none);
+    }
+    card.append(dependenciesSection);
+
+    const implicationsSection = document.createElement("section");
+    implicationsSection.className = "finding-implication";
+    const implicationsTitle = document.createElement("h4");
+    implicationsTitle.textContent = "Possible implication";
+    const implicationText = document.createElement("p");
+    implicationText.textContent = finding.possible_implications[0]
+      ?? "No downstream implication is identified from the imported dependency data.";
+    implicationsSection.append(implicationsTitle, implicationText);
+    card.append(implicationsSection);
+
+    findingList.append(card);
   }
 }

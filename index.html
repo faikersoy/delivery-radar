@@ -155,9 +155,9 @@
               <p class="section-kicker">02 <span>/</span> REVIEW</p>
               <h2 id="review-title">Findings &amp; decisions</h2>
             </div>
-            <span class="finding-count"><span class="count-dot"></span> No findings yet</span>
+            <span id="finding-count" class="finding-count"><span class="count-dot"></span> No qualifying findings</span>
           </div>
-          <div class="empty-review">
+          <div id="empty-review" class="empty-review">
             <div class="empty-visual" aria-hidden="true">
               <span class="empty-orbit orbit-a"></span>
               <span class="empty-orbit orbit-b"></span>
@@ -166,11 +166,12 @@
             </div>
             <div class="empty-copy">
               <span class="empty-label">YOUR REVIEW SPACE</span>
-              <h3>Your findings will appear here</h3>
-              <p>Once task data and notes can be analyzed, evidence-backed delivery signals will be ready for your review.</p>
+              <h3>No evidence-backed findings yet</h3>
+              <p>A finding appears when a blocked task has an explicitly linked active blocker or pending-decision signal.</p>
             </div>
-            <div class="empty-state-note"><span class="lock-icon" aria-hidden="true">◌</span> No analysis or decisions are active yet</div>
+            <div class="empty-state-note"><span class="lock-icon" aria-hidden="true">◌</span> Import tasks and add meeting notes to review findings</div>
           </div>
+          <div id="finding-list" class="finding-list" aria-live="polite"></div>
         </section>
 
         <footer class="page-footer">
