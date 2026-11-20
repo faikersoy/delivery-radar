@@ -25,7 +25,7 @@ Add implicit discovery alongside this flow, after the app has task and segment i
 2. Put implicit discovery in a separate, pure analysis module. Candidate retrieval and relationship classification have separate contracts and metrics; they may run in one implementation or one model call unless evidence shows separate calls improve results.
 3. V1 supports exactly `progress`, `completion`, `blocker`, and `dependency`. Defer the `conflict` relationship type and all cross-segment contradiction reasoning.
 4. Do not equate mentions with relationships or relationships with risks. Do not use suggestions as findings or update task status.
-5. Return zero or more task candidates per segment. Emit no relationship suggestion when evidence does not support one; `NO_LINK`/abstention is valid.
+5. Return a candidate-only retrieval result for each claim/evidence span, containing zero or more task candidates. Candidate retrieval does not decide whether a relationship exists. A later classification result emits supported relationship suggestions or explicit abstentions; `NO_LINK`/abstention belongs to that classification stage.
 6. Keep PM suggestion decisions separate from finding decisions. Preserve the original suggestion, evidence, and provenance beside each decision.
 7. Keep the engine provider-neutral. V1 needs no LLM, external dependency, persistence, embeddings, or vector database.
 
@@ -47,49 +47,70 @@ Existing inputs are passed without mutation:
 }
 ```
 
-Keep candidate records separate from relationship suggestions:
+Candidate Retrieval and Relationship Classification have separate result contracts. Candidate Retrieval returns a candidate-only result for one claim; it does not include a suggestion or a classification abstention:
 
 ```js
 {
-  candidate_id: "candidate:<stable-id>",
-  claim_id: "claim:1",
+  source_ref: { source_id: "meeting_notes" }, // caller-supplied source identity
   segment_id: "segment:120:220",
-  task_id: "T-211",
-  retrieval_basis: ["task title terminology matches the API work phrase"]
+  claim_id: "claim:1",
+  evidence_span: { text: "...exact claim text...", start_offset: 133, end_offset: 180 },
+  context_spans: [
+    { text: "...exact contextual text...", start_offset: 120, end_offset: 220 }
+  ],
+  candidates: [
+    {
+      candidate_id: "candidate:<stable-id>",
+      task_id: "T-211",
+      retrieval_basis: ["task title terminology matches the API work phrase"]
+    }
+  ]
 }
 ```
 
+`candidate_result` identifies its claim and source, preserves the exact evidence and offsets, and keeps any context spans separate. Each candidate contains retrieval information only. An empty `candidates` array means retrieval found no plausible task in its available inputs; it does not establish that no relationship exists. This result never contains a relationship suggestion or a classification `no_link_reason`.
+
 ```js
 {
-  suggestion_id: "suggestion:<stable-id>",
-  candidate_id: "candidate:<stable-id>",
-  claim_id: "claim:1",
-  relationship_type: "progress",
-  evidence_assessment: "strong", // strong | weak | uncertain
-  candidate_ambiguity: "unique", // unique | multiple; for this claim/evidence span
-  evidence_span: { text: "...exact quote...", start_offset: 133, end_offset: 180 },
-  context_span: { text: "...full source segment...", start_offset: 120, end_offset: 220 },
-  rationale: "The speaker describes this task's API wiring as currently underway.",
-  related_task_id: null, // optional; only if both imported task endpoints are evidence-supported
-  dependency_role: null, // for dependency: prerequisite | gated_task, relative to task_id/related_task_id
-  provenance: {
-    method: "deterministic_rules",
-    provider: null,
-    model: null,
-    prompt_version: null,
-    extractor_version: "implicit-linking-v1",
-    source_ref: { source_id: "meeting_notes" }
-  }
+  candidate_result: { /* the candidate-only result consumed by classification */ },
+  suggestions: [
+    {
+      suggestion_id: "suggestion:<stable-id>",
+      candidate_id: "candidate:<stable-id>",
+      claim_id: "claim:1",
+      relationship_type: "progress",
+      evidence_assessment: "strong", // strong | weak | uncertain
+      candidate_ambiguity: "unique", // unique | multiple; for this claim/evidence span
+      evidence_span: { text: "...exact quote...", start_offset: 133, end_offset: 180 },
+      context_span: { text: "...full source segment...", start_offset: 120, end_offset: 220 },
+      rationale: "The speaker describes this task's API wiring as currently underway.",
+      related_task_id: null, // optional; only if both imported task endpoints are evidence-supported
+      dependency_role: null, // for dependency: prerequisite | gated_task, relative to task_id/related_task_id
+      provenance: {
+        method: "deterministic_rules",
+        provider: null,
+        model: null,
+        prompt_version: null,
+        extractor_version: "implicit-linking-v1",
+        source_ref: { source_id: "meeting_notes" }
+      }
+    }
+  ],
+  abstentions: [
+    { candidate_id: "candidate:<stable-id>", reason: "insufficient_evidence" }
+  ]
 }
 ```
+
+This is the separate `classification_result`. It consumes one `candidate_result` and returns zero or more relationship suggestions plus explicit classification abstentions. Each suggestion references a candidate from the consumed result. A considered candidate receives either a suggestion or a candidate-scoped abstention, not both. An abstention may identify a candidate when that candidate was considered, or be claim-scoped when no candidate was available or the candidate set remains ambiguous. Candidate retrieval does not populate or infer these outcomes.
 
 `claim_id` groups the candidate results and suggestions for one evidence claim within one segment's analysis result. It is unique only within that result and is not a persisted identity or PM-decision key; no stability across re-ingestion is promised. Suggestion/review identity uses the caller-supplied source identity and semantic fields instead.
 
 `candidate_ambiguity` reports whether one or multiple tasks remain plausible for this claim; `evidence_assessment` reports how well the text supports this particular relationship. Neither field is a numeric risk score. Model confidence, if later retained for diagnostics, is not authoritative and cannot independently promote a suggestion to strong.
 
-Return results grouped by claim/evidence span within each source segment, for example `{ segment_id, claims: [{ claim_id, evidence_span, candidate_results }] }`. Each `candidate_result` contains a `candidate` and either a `suggestion` or a `no_link_reason` (`ambiguous_candidates` or `insufficient_evidence`). A claim with no candidates has an empty `candidate_results` array and may use `no_link_reason: "no_plausible_candidate"`. This keeps candidate records distinct from relationship suggestions while allowing one segment to contain multiple claims, multiple suggestions, and a mix of suggestions and abstentions. `NO_LINK` applies to the claim/candidate result, never globally to a segment that has a valid suggestion. A candidate by itself is not a relationship.
+Group candidate results by source segment, for example `{ segment_id, claims: [{ claim_id, candidate_result }] }`. The later classifier consumes each claim's candidate result and produces a separate classification result. That result may contain suggestions for supported candidates and abstentions for other candidates or for the claim as a whole. A candidate by itself is not a relationship.
 
-For example, one claim in a segment may have a valid suggestion while another claim has `no_link_reason: "ambiguous_candidates"`; the first remains reviewable and the second abstains independently.
+For example, one claim in a segment may classify one candidate into a valid suggestion while another claim yields a claim-scoped `ambiguous_candidates` abstention; the first remains reviewable and the second abstains independently. An empty retrieval candidate list is not itself a `no_link_reason`; the classifier may represent it as `no_plausible_candidate` if its result contract requires an explicit outcome.
 
 `candidate_ambiguity` is assessed against the plausible task set for that specific claim/evidence span, not against every candidate anywhere in the segment. A segment may therefore have a unique candidate for one claim and multiple unresolved candidates for another.
 
@@ -131,27 +152,27 @@ Use SHA-256 via the platform crypto API, with the canonical fields and signature
 
 Candidate discovery answers “which tasks are plausible?” using only imported task information and source wording. Start with transparent title/phrase retrieval and show its basis. Status, owner, due date, signals, and dependencies may be context only if their use is explicitly listed in `retrieval_basis`; they must not be presented as textual evidence.
 
-Relationship classification answers “what does this segment say about that task?” It consumes a candidate, exact evidence/context, and limited task context, then returns one of the four types and an evidence assessment. The classifier must be able to reject all candidates. Keep these stages logically separate for measurement, without requiring separate LLM calls.
+Relationship classification answers “what does this claim say about that task?” It consumes a `candidate_result`, exact evidence/context, and limited task context, then returns a `classification_result` with supported suggestions and/or explicit abstentions. A suggestion uses one of the four types and an evidence assessment. The classifier must be able to reject all candidates. Keep these stages logically separate for measurement, without requiring separate LLM calls.
 
 Examples (illustrative; task names use the frozen sample schema):
 
 - **Task-specific progress:** “I am currently wiring the inventory reservation API calls between the order service and the warehouse system.” Candidate: T-211, “Map real-time stock allocation endpoints to warehouse WMS”; relationship: `progress`.
 - **Explicit completion:** “The standard operating procedures and quick-reference job aids have been published and signed off.” Candidate: T-222, “Publish standard operating procedures and quick-reference job aids”; relationship: `completion`.
 - **Missing credential blocker:** “Until PaySphere releases production keys, I cannot start the settlement feed.” Candidates: T-212 as prerequisite context and T-213 as the gated work; relationship suggestions must cite the clauses and state their roles. Do not infer that the feed is delayed beyond this claim.
-- **Generic statement:** “We had a productive check-in yesterday.” No candidate; `NO_LINK/no_plausible_candidate`.
+- **Generic statement:** “We had a productive check-in yesterday.” Retrieval returns an empty candidate list; classification may report `NO_LINK/no_plausible_candidate`.
 - **Two supported candidates:** “Production keys arrived, and we have started tokenization and settlement reconciliation.” Candidates may include T-212 (completion) and T-213 (progress), each supported by a distinct span.
-- **Mention without relation:** “Procurement mentioned the supplier catalog migration.” T-205 may be a candidate, but the sentence says neither progress, completion, blocker, nor dependency; return `NO_LINK/insufficient_evidence`.
+- **Mention without relation:** “Procurement mentioned the supplier catalog migration.” T-205 may be a candidate, but the sentence says neither progress, completion, blocker, nor dependency; classification returns `NO_LINK/insufficient_evidence` for that candidate.
 
 ## 8. Abstention and uncertainty rules
 
 - **Strong:** unhedged, task-specific evidence directly states the relationship; the span validates; and the candidate is discriminated by the evidence. If several tasks each have distinct supporting clauses, each may receive a strong suggestion.
 - **Weak:** a plausible relationship is supported mostly by context or broad terminology, with a real possibility of a wrong task or relation. It is surfaced for PM review, never treated as confirmed.
 - **Uncertain:** the text hedges whether the relationship is true, or the same evidence materially supports incompatible interpretations. V1 does not turn this into `conflict`.
-- **NO_LINK / `no_plausible_candidate`:** retrieval finds no relevant task.
-- **NO_LINK / `ambiguous_candidates`:** several candidates remain plausible for this claim and its evidence span does not distinguish them. Do not make broad many-to-many suggestions.
-- **NO_LINK / `insufficient_evidence`:** a task is mentioned or contextually similar, but the text does not establish one of the four relationships.
+- **Classification abstention / `no_plausible_candidate`:** candidate retrieval returned no relevant task. This is an explicit classifier outcome; the empty candidate list alone is not a claim that no relationship exists.
+- **Classification abstention / `ambiguous_candidates`:** several retrieved candidates remain plausible for this claim and its evidence span does not distinguish them. Do not make broad many-to-many suggestions.
+- **Classification abstention / `insufficient_evidence`:** a task is mentioned or contextually similar, but the text does not establish one of the four relationships.
 
-These are evidence and ambiguity rules, not calibrated probabilities. A low model confidence alone cannot choose the outcome. Apply them per claim/evidence span, not once to the whole segment. If one claim has a valid suggestion and another has unresolved candidates, retain the suggestion and record `ambiguous_candidates` for the latter candidate result. Do not invent a strict type precedence when a statement has mixed evidence.
+These are evidence and ambiguity rules, not calibrated probabilities. A low model confidence alone cannot choose the outcome. Apply them per claim/evidence span, not once to the whole segment. If one claim has a valid suggestion and another has unresolved candidates, retain the suggestion and record `ambiguous_candidates` in the latter claim's classification result. Do not invent a strict type precedence when a statement has mixed evidence.
 
 ## 9. PM suggestion review lifecycle
 
