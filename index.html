@@ -157,8 +157,8 @@
             </div>
             <span id="finding-count" class="finding-count"><span class="count-dot"></span> No qualifying findings</span>
           </div>
-          <p class="decision-prototype-notice">Decisions are not saved in this prototype. Refreshing the page will clear them.</p>
-          <p class="decision-help">Confirm when the finding and suggested action are correct. Dismiss when it is not a valid delivery risk. Override when it is real but you assess it or would act differently.</p>
+          <p class="decision-prototype-notice">Decisions stay in this browser session. Refreshing the page will clear them.</p>
+          <p class="decision-help">Confirm when the evidence-backed finding or relationship suggestion is supported. Dismiss when it is not valid. Override when your assessment or action differs.</p>
           <div id="empty-review" class="empty-review">
             <div class="empty-visual" aria-hidden="true">
               <span class="empty-orbit orbit-a"></span>
@@ -174,6 +174,23 @@
             <div class="empty-state-note"><span class="lock-icon" aria-hidden="true">◌</span> Import tasks and add meeting notes to review findings</div>
           </div>
           <div id="finding-list" class="finding-list" aria-live="polite"></div>
+          <section class="relationship-review" aria-labelledby="relationship-review-title">
+            <div class="relationship-review-heading">
+              <h3 id="relationship-review-title">Relationship suggestions</h3>
+              <span id="relationship-suggestion-count" class="finding-count">0 suggestions</span>
+            </div>
+            <p id="relationship-review-summary" class="relationship-review-summary" role="status" aria-live="polite">Import tasks and add meeting notes to review suggested relationships.</p>
+            <div id="relationship-suggestion-list" class="relationship-suggestion-list" aria-live="polite"></div>
+            <section id="relationship-abstentions-section" class="relationship-abstentions" aria-labelledby="relationship-abstentions-title" hidden>
+              <h4 id="relationship-abstentions-title">Not classified</h4>
+              <p>These claims did not have enough evidence for a relationship suggestion. They are not findings.</p>
+              <ul id="relationship-abstention-list"></ul>
+            </section>
+            <section id="relationship-not-observed-section" class="not-observed-section" aria-labelledby="relationship-not-observed-title" hidden>
+              <h4 id="relationship-not-observed-title">Previously reviewed suggestions not observed</h4>
+              <div id="relationship-not-observed-list" class="not-observed-list"></div>
+            </section>
+          </section>
           <section id="not-observed-section" class="not-observed-section" aria-labelledby="not-observed-title" hidden>
             <h3 id="not-observed-title">Not observed</h3>
             <div id="not-observed-list" class="not-observed-list"></div>

@@ -5,7 +5,9 @@ import {
   getDecisionKey,
   getEvidenceSignature,
   NOT_OBSERVED_MESSAGE,
+  reconcileRelationshipSuggestionDecisions,
   reconcileDecisions,
+  saveRelationshipSuggestionDecision,
   saveDecision,
 } from "../src/review/decisions.mjs";
 
@@ -45,6 +47,33 @@ const save = (store, finding, status, values = {}) => saveDecision(store, {
   ...values,
 });
 
+const suggestionReviewItem = ({
+  evidence = "Supplier onboarding is blocked pending approval.",
+  reviewFingerprint = "relationship-fingerprint-1",
+  status = "Blocked",
+} = {}) => ({
+  review_fingerprint: reviewFingerprint,
+  suggestion: {
+    task_id: "T-301",
+    relationship_type: "blocker",
+    dependency_role: null,
+    related_task_id: null,
+    evidence_assessment: "strong",
+    evidence_span: {
+      text: evidence,
+      start_offset: 0,
+      end_offset: evidence.length,
+    },
+    provenance: { source_ref: { source_id: "meeting-notes" } },
+  },
+  task: {
+    task_id: "T-301",
+    title: "Supplier onboarding checklist",
+    status,
+  },
+  related_task: null,
+});
+
 test("records Confirm and Dismiss decisions with reviewed evidence and timestamps", () => {
   const finding = makeFinding();
   const confirmedStore = new Map();
@@ -54,6 +83,69 @@ test("records Confirm and Dismiss decisions with reviewed evidence and timestamp
     reason: "False positive",
     dismiss_reason_category: "false_positive",
     explanatory_note: "The vendor has already approved it outside the meeting.",
+  });
+
+  test("records and reconciles relationship suggestion decisions without legacy finding adaptation", () => {
+    const reviewItem = suggestionReviewItem();
+    const store = new Map();
+    const decision = saveRelationshipSuggestionDecision(store, {
+      project_id: "project-a",
+      review_item: reviewItem,
+      status: "confirmed",
+      decided_at: "2026-11-20T10:00:00.000Z",
+    });
+
+    assert.equal(decision.review_subject_type, "relationship_suggestion");
+    assert.equal(decision.status, "confirmed");
+    assert.equal(decision.suggestion_snapshot.suggestion.relationship_type, "blocker");
+    assert.equal(decision.evidence_snapshot[0].evidence, reviewItem.suggestion.evidence_span.text);
+    assert.equal("finding_snapshot" in decision, false);
+
+    const [unchanged] = reconcileRelationshipSuggestionDecisions("project-a", [reviewItem], store).current;
+    assert.equal(unchanged.review_state, "decided");
+
+    const changedItem = suggestionReviewItem({ evidence: "Supplier onboarding remains blocked pending approval." });
+    const [changed] = reconcileRelationshipSuggestionDecisions("project-a", [changedItem], store).current;
+    assert.equal(changed.review_state, "review_needed");
+    assert.equal(changed.evidence_changes.added[0].evidence, changedItem.suggestion.evidence_span.text);
+
+    const notObserved = reconcileRelationshipSuggestionDecisions("project-a", [], store).not_observed;
+    assert.equal(notObserved.length, 1);
+    assert.equal(notObserved[0].review_item.review_fingerprint, reviewItem.review_fingerprint);
+  });
+
+  test("relationship suggestions use the existing Dismiss and Override requirements", () => {
+    const reviewItem = suggestionReviewItem();
+    const store = new Map();
+    assert.throws(() => saveRelationshipSuggestionDecision(store, {
+      project_id: "project-a",
+      review_item: reviewItem,
+      status: "dismissed",
+    }), /dismissal reason/);
+
+    const dismissed = saveRelationshipSuggestionDecision(store, {
+      project_id: "project-a",
+      review_item: reviewItem,
+      status: "dismissed",
+      reason: "False positive",
+      dismiss_reason_category: "false_positive",
+    });
+    assert.equal(dismissed.status, "dismissed");
+
+    assert.throws(() => saveRelationshipSuggestionDecision(store, {
+      project_id: "project-a",
+      review_item: reviewItem,
+      status: "overridden",
+      reason: "Assessment changed",
+    }), /revised assessment or suggested action/);
+    const overridden = saveRelationshipSuggestionDecision(store, {
+      project_id: "project-a",
+      review_item: reviewItem,
+      status: "overridden",
+      reason: "Assessment changed",
+      revised_assessment: "The issue is already being handled externally.",
+    });
+    assert.equal(overridden.status, "overridden");
   });
 
   assert.equal(confirmed.status, "confirmed");

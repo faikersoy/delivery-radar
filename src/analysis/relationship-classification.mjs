@@ -370,9 +370,35 @@ function resolveTaskDependencyPair(candidate, allCandidates, evidenceText) {
 }
 
 function splitEvidenceClauses(evidenceText) {
-  return evidenceText.split(/[.!?;]+|,(?!\s*that\s+(?:unblocks|is (?:the )?prerequisite|prerequisite for)\b)|\b(?:while|whereas|but|however|although|though)\b/i)
-    .map((clause) => clause.trim())
-    .filter(Boolean);
+  return splitEvidenceClauseRanges(evidenceText).map(({ text }) => text);
+}
+
+export function splitEvidenceClauseRanges(evidenceText) {
+  if (typeof evidenceText !== "string") throw new TypeError("evidenceText must be a string.");
+
+  const separators = /[.!?;]+|\b(?:while|whereas|but|however|although|though)\b/gi;
+  const clauses = [];
+  let start = 0;
+
+  for (const match of evidenceText.matchAll(separators)) {
+    addClauseRange(clauses, evidenceText, start, match.index);
+    start = match.index + match[0].length;
+  }
+  addClauseRange(clauses, evidenceText, start, evidenceText.length);
+
+  return clauses;
+}
+
+function addClauseRange(clauses, text, start, end) {
+  while (start < end && /\s/u.test(text[start])) start += 1;
+  while (end > start && /\s/u.test(text[end - 1])) end -= 1;
+  if (start === end) return;
+
+  clauses.push({
+    text: text.slice(start, end),
+    start_offset: start,
+    end_offset: end,
+  });
 }
 
 function getCandidateLocalEvidence(candidate, clauses) {
