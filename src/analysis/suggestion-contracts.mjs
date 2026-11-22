@@ -2,6 +2,7 @@ const RELATIONSHIP_TYPES = new Set(["progress", "completion", "blocker", "depend
 const EVIDENCE_ASSESSMENTS = new Set(["strong", "weak", "uncertain"]);
 const CANDIDATE_AMBIGUITIES = new Set(["unique", "multiple"]);
 const DEPENDENCY_ROLES = new Set(["prerequisite", "gated_task"]);
+const ABSTENTION_REASONS = new Set(["no_plausible_candidate", "insufficient_evidence", "ambiguous_candidates"]);
 const PROVENANCE_OPTIONAL_TEXT_FIELDS = ["provider", "model", "prompt_version", "extractor_version"];
 const FINGERPRINT_VERSION = "delivery-radar-suggestion-review-v1";
 
@@ -82,6 +83,74 @@ export function validateRelationshipSuggestion(suggestion, sourceText) {
     const result = validateEvidenceSpan(sourceText, suggestion?.[field]);
     for (const error of result.errors) errors.push({ ...error, field: `${field}.${error.field}` });
   }
+  return { valid: errors.length === 0, errors };
+}
+
+/** Validate one classification abstention record. */
+export function validateAbstention(abstention) {
+  const errors = [];
+  if (!isObject(abstention)) {
+    return { valid: false, errors: [{ field: "abstention", message: "Abstention must be an object." }] };
+  }
+  if (!isNonEmptyString(abstention.claim_id)) {
+    errors.push({ field: "claim_id", message: "claim_id must be a non-empty string." });
+  }
+  if (!ABSTENTION_REASONS.has(abstention.reason)) {
+    errors.push({ field: "reason", message: "reason must be no_plausible_candidate, insufficient_evidence, or ambiguous_candidates." });
+  }
+  if (abstention.reason === "insufficient_evidence") {
+    if (!isNonEmptyString(abstention.candidate_id)) {
+      errors.push({ field: "candidate_id", message: "insufficient_evidence requires a non-empty candidate_id." });
+    }
+  } else if (abstention.candidate_id !== null && abstention.candidate_id !== undefined && !isNonEmptyString(abstention.candidate_id)) {
+    errors.push({ field: "candidate_id", message: "candidate_id must be null or a non-empty string." });
+  }
+  return { valid: errors.length === 0, errors };
+}
+
+/** Validate complete classification_result container and its constituent suggestions and abstentions. */
+export function validateClassificationResult(result, sourceText = null) {
+  const errors = [];
+  if (!isObject(result)) {
+    return { valid: false, errors: [{ field: "result", message: "Classification result must be an object." }] };
+  }
+  if (!isObject(result.candidate_result)) {
+    errors.push({ field: "candidate_result", message: "candidate_result must be an object." });
+  }
+  if (!Array.isArray(result.suggestions)) {
+    errors.push({ field: "suggestions", message: "suggestions must be an array." });
+  }
+  if (!Array.isArray(result.abstentions)) {
+    errors.push({ field: "abstentions", message: "abstentions must be an array." });
+  }
+  if (errors.length > 0) return { valid: false, errors };
+
+  const suggestedCandidateIds = new Set();
+  for (const [index, suggestion] of result.suggestions.entries()) {
+    const suggestionResult = sourceText
+      ? validateRelationshipSuggestion(suggestion, sourceText)
+      : validateSuggestionContract(suggestion);
+    for (const error of suggestionResult.errors) {
+      errors.push({ field: `suggestions[${index}].${error.field}`, message: error.message });
+    }
+    if (suggestion && typeof suggestion.candidate_id === "string") {
+      suggestedCandidateIds.add(suggestion.candidate_id);
+    }
+  }
+
+  for (const [index, abstention] of result.abstentions.entries()) {
+    const abstentionResult = validateAbstention(abstention);
+    for (const error of abstentionResult.errors) {
+      errors.push({ field: `abstentions[${index}].${error.field}`, message: error.message });
+    }
+    if (abstention && abstention.candidate_id && suggestedCandidateIds.has(abstention.candidate_id)) {
+      errors.push({
+        field: `abstentions[${index}].candidate_id`,
+        message: `Candidate ${abstention.candidate_id} cannot have both a suggestion and an abstention.`,
+      });
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }
 

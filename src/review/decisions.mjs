@@ -80,6 +80,28 @@ export function getEvidenceItemKey(item) {
         title: item.title,
         blocked_by_task_id: item.blocked_by_task_id,
       });
+    case "relationship_suggestion":
+      return JSON.stringify({
+        kind: item.kind,
+        source_ref: sourceRef,
+        task_id: item.task_id,
+        relationship_type: item.relationship_type,
+        dependency_role: item.dependency_role,
+        related_task_id: item.related_task_id,
+        evidence_assessment: item.evidence_assessment,
+        evidence: item.evidence,
+      });
+    case "review_task":
+      return JSON.stringify({
+        kind: item.kind,
+        source_ref: sourceRef,
+        task_id: item.task_id,
+        title: item.title,
+        status: item.status,
+        owner: item.owner,
+        due_date: item.due_date,
+        blocked_by: item.blocked_by,
+      });
     default:
       throw new Error(`Unsupported evidence item kind: ${item.kind}`);
   }
@@ -102,19 +124,7 @@ export function saveDecision(decisions, input) {
   if (!nonEmpty(projectId) || !finding || !nonEmpty(finding.finding_fingerprint)) {
     throw new Error("A project ID and generated finding are required.");
   }
-  if (!DECISION_STATUSES.has(status)) {
-    throw new Error("Choose Confirm, Dismiss, or Override.");
-  }
-  if (status === "dismissed") {
-    if (!nonEmpty(reason)) throw new Error("Choose a dismissal reason.");
-    if (!DISMISS_REASONS.has(dismiss_reason_category)) throw new Error("Choose False positive or Handled externally.");
-  }
-  if (status === "overridden") {
-    if (!nonEmpty(reason)) throw new Error("An override reason is required.");
-    if (!nonEmpty(revised_assessment) && !nonEmpty(suggested_action)) {
-      throw new Error("Provide a revised assessment or suggested action.");
-    }
-  }
+  validateDecisionFields(status, reason, dismiss_reason_category, revised_assessment, suggested_action);
 
   const decision = {
     project_id: projectId,
@@ -133,6 +143,88 @@ export function saveDecision(decisions, input) {
 
   decisions.set(getDecisionKey(projectId, finding.finding_fingerprint), decision);
   return decision;
+}
+
+/** Record a PM decision for a relationship suggestion without adapting it to a legacy finding. */
+export function saveRelationshipSuggestionDecision(decisions, input) {
+  const {
+    project_id: projectId,
+    review_item: reviewItem,
+    status,
+    reason = null,
+    dismiss_reason_category = null,
+    explanatory_note = null,
+    revised_assessment = null,
+    suggested_action = null,
+    decided_at: decidedAt = new Date().toISOString(),
+  } = input;
+
+  if (!nonEmpty(projectId) || !isRelationshipReviewItem(reviewItem)) {
+    throw new Error("A project ID and relationship review item are required.");
+  }
+  validateDecisionFields(status, reason, dismiss_reason_category, revised_assessment, suggested_action);
+
+  const evidenceSnapshot = createRelationshipEvidenceSnapshot(reviewItem);
+  const decision = {
+    project_id: projectId,
+    finding_fingerprint: reviewItem.review_fingerprint,
+    review_subject_type: "relationship_suggestion",
+    status,
+    reason: nonEmpty(reason) ? reason.trim() : null,
+    dismiss_reason_category,
+    explanatory_note: nonEmpty(explanatory_note) ? explanatory_note.trim() : null,
+    revised_assessment: nonEmpty(revised_assessment) ? revised_assessment.trim() : null,
+    suggested_action: nonEmpty(suggested_action) ? suggested_action.trim() : null,
+    reviewed_evidence_signature: getReviewEvidenceSignature(evidenceSnapshot),
+    evidence_snapshot: evidenceSnapshot,
+    suggestion_snapshot: snapshotRelationshipReviewItem(reviewItem),
+    decided_at: decidedAt,
+  };
+
+  decisions.set(getDecisionKey(projectId, `relationship:${reviewItem.review_fingerprint}`), decision);
+  return decision;
+}
+
+/** Reconcile relationship suggestions using the same session decision store and evidence-diff rules. */
+export function reconcileRelationshipSuggestionDecisions(projectId, reviewItems, decisions) {
+  const currentKeys = new Set();
+  const current = reviewItems.map((reviewItem) => {
+    if (!isRelationshipReviewItem(reviewItem)) throw new Error("Invalid relationship review item.");
+    const key = getDecisionKey(projectId, `relationship:${reviewItem.review_fingerprint}`);
+    currentKeys.add(key);
+    const decision = decisions.get(key) ?? null;
+    const evidenceSnapshot = createRelationshipEvidenceSnapshot(reviewItem);
+    if (!decision) {
+      return {
+        review_item: reviewItem,
+        decision: null,
+        review_state: "pending_review",
+        evidence_changes: { added: [], removed: [] },
+      };
+    }
+
+    const changed = decision.reviewed_evidence_signature !== getReviewEvidenceSignature(evidenceSnapshot);
+    return {
+      review_item: reviewItem,
+      decision,
+      review_state: changed ? "review_needed" : "decided",
+      evidence_changes: changed
+        ? compareEvidence(decision.evidence_snapshot, evidenceSnapshot)
+        : { added: [], removed: [] },
+    };
+  });
+
+  const notObserved = [...decisions.entries()]
+    .filter(([key, decision]) => decision.review_subject_type === "relationship_suggestion"
+      && decision.project_id === projectId && !currentKeys.has(key))
+    .map(([, decision]) => ({
+      decision,
+      review_item: decision.suggestion_snapshot,
+      observation_state: "not_observed",
+      message: NOT_OBSERVED_MESSAGE,
+    }));
+
+  return { current, not_observed: notObserved };
 }
 
 /** Associate current findings with decisions and retain absent findings as not observed. */
@@ -160,8 +252,12 @@ export function reconcileDecisions(projectId, findings, decisions) {
   });
 
   const notObserved = [...decisions.entries()]
-    .filter(([key, decision]) => decision.project_id === projectId && !currentKeys.has(key))
-    .map(([, decision]) => ({
+.filter(([key, decision]) => (
+  decision.review_subject_type !== "relationship_suggestion" &&
+  decision.project_id === projectId &&
+  !currentKeys.has(key)
+))
+  .map(([, decision]) => ({
       decision,
       finding: decision.finding_snapshot,
       observation_state: "not_observed",
@@ -169,6 +265,77 @@ export function reconcileDecisions(projectId, findings, decisions) {
     }));
 
   return { current, not_observed: notObserved };
+}
+
+function validateDecisionFields(status, reason, dismissReasonCategory, revisedAssessment, suggestedAction) {
+  if (!DECISION_STATUSES.has(status)) throw new Error("Choose Confirm, Dismiss, or Override.");
+  if (status === "dismissed") {
+    if (!nonEmpty(reason)) throw new Error("Choose a dismissal reason.");
+    if (!DISMISS_REASONS.has(dismissReasonCategory)) throw new Error("Choose False positive or Handled externally.");
+  }
+  if (status === "overridden") {
+    if (!nonEmpty(reason)) throw new Error("An override reason is required.");
+    if (!nonEmpty(revisedAssessment) && !nonEmpty(suggestedAction)) {
+      throw new Error("Provide a revised assessment or suggested action.");
+    }
+  }
+}
+
+function isRelationshipReviewItem(reviewItem) {
+  return reviewItem !== null
+    && typeof reviewItem === "object"
+    && nonEmpty(reviewItem.review_fingerprint)
+    && reviewItem.suggestion?.relationship_type
+    && reviewItem.task?.task_id;
+}
+
+function createRelationshipEvidenceSnapshot(reviewItem) {
+  const { suggestion, task, related_task: relatedTask } = reviewItem;
+  const sourceRef = normalizeSourceRef(suggestion.provenance?.source_ref);
+  const items = [{
+    kind: "relationship_suggestion",
+    source_ref: sourceRef,
+    task_id: suggestion.task_id,
+    relationship_type: suggestion.relationship_type,
+    dependency_role: suggestion.dependency_role ?? null,
+    related_task_id: suggestion.related_task_id ?? null,
+    evidence_assessment: suggestion.evidence_assessment,
+    evidence: suggestion.evidence_span.text,
+    start_offset: suggestion.evidence_span.start_offset,
+    end_offset: suggestion.evidence_span.end_offset,
+  }, makeReviewTaskItem(task)];
+
+  if (relatedTask) items.push(makeReviewTaskItem(relatedTask));
+  return items;
+}
+
+function makeReviewTaskItem(task) {
+  return {
+    kind: "review_task",
+    source_ref: { source_id: "task_data" },
+    task_id: task.task_id,
+    title: task.title,
+    status: task.status ?? null,
+    owner: task.owner ?? null,
+    due_date: task.due_date ?? null,
+    blocked_by: Array.isArray(task.blocked_by) ? [...task.blocked_by] : [],
+  };
+}
+
+function getReviewEvidenceSignature(items) {
+  return JSON.stringify(items.map(getEvidenceItemKey).sort());
+}
+
+function snapshotRelationshipReviewItem(reviewItem) {
+  const copyTask = (task) => task
+    ? { ...task, blocked_by: Array.isArray(task.blocked_by) ? [...task.blocked_by] : [] }
+    : null;
+  return {
+    review_fingerprint: reviewItem.review_fingerprint,
+    suggestion: structuredClone(reviewItem.suggestion),
+    task: copyTask(reviewItem.task),
+    related_task: copyTask(reviewItem.related_task),
+  };
 }
 
 function compareEvidence(previousItems, currentItems) {
